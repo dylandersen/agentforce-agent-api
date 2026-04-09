@@ -1,109 +1,25 @@
 ---
 name: agentforce-agent-api
 description: >
-  Integrates Salesforce Agentforce Agent API into web applications using OAuth
-  Client Credentials flow. Covers session creation, synchronous messaging, token
-  caching, and correct API endpoint/body formats. Use when building chat interfaces
-  with Agentforce, setting up Agent API authentication, debugging Agent API errors,
-  or connecting external apps to Salesforce agents.
-license: MIT
-metadata:
-  version: "1.0.0"
-  author: "Dylan Andersen"
+  Integrates Salesforce Agentforce agents into external applications via the
+  Agent API (REST), Mobile SDK (iOS/Android/React Native), and Testing API.
+  Covers OAuth Client Credentials auth, session lifecycle, synchronous and
+  streaming messaging, agent variables, token caching, and error diagnosis.
+  Use when building chat interfaces with Agentforce, setting up Agent API
+  authentication, debugging Agent API errors, connecting external or mobile
+  apps to Salesforce agents, passing context variables, or testing agents
+  programmatically.
 ---
 
 # Agentforce Agent API Integration
 
-Build chat interfaces powered by Salesforce Agentforce agents via the Agent API. This skill covers authentication, session management, messaging, and common pitfalls.
+Build interfaces powered by Salesforce Agentforce agents. This skill covers the Agent API, authentication, Mobile SDKs, Testing API, and common pitfalls.
 
-## API Endpoints
+## Quick Start — Minimum Viable Call
 
-The Agent API is hosted on `api.salesforce.com`, **NOT** on your My Domain.
+Three steps to talk to an agent:
 
-```
-Base: https://api.salesforce.com/einstein/ai-agent/v1
-```
-
-Your My Domain goes in the request body as `instanceConfig.endpoint`.
-
-### Create Session
-
-```
-POST https://api.salesforce.com/einstein/ai-agent/v1/agents/{AGENT_ID}/sessions
-```
-
-```json
-{
-  "externalSessionKey": "<random-uuid>",
-  "instanceConfig": {
-    "endpoint": "https://<MY_DOMAIN>"
-  },
-  "streamingCapabilities": {
-    "chunkTypes": ["Text"]
-  },
-  "bypassUser": true
-}
-```
-
-Response returns `sessionId` and `_links` with message/stream/end URLs.
-
-### Send Synchronous Message
-
-```
-POST https://api.salesforce.com/einstein/ai-agent/v1/sessions/{SESSION_ID}/messages
-```
-
-```json
-{
-  "message": {
-    "type": "Text",
-    "text": "Hello",
-    "sequenceId": 1
-  }
-}
-```
-
-`sequenceId` goes **inside** the `message` object. Increment per message.
-
-Response text is in `messages[].message` field:
-
-```json
-{
-  "messages": [
-    {
-      "type": "Inform",
-      "message": "The response text is here",
-      "id": "...",
-      "feedbackId": "...",
-      "isContentSafe": true,
-      "citedReferences": []
-    }
-  ]
-}
-```
-
-### End Session
-
-```
-DELETE https://api.salesforce.com/einstein/ai-agent/v1/sessions/{SESSION_ID}
-```
-
-## OAuth Client Credentials Flow
-
-### Connected App Setup
-
-1. Create External Client App in Salesforce Setup
-2. Enable OAuth with scopes: `api`, `refresh_token`/`offline_access`, `chatbot_api`, `sfap_api`
-3. Enable Client Credentials Flow + JWT-based access tokens
-4. Set Run As user (see below)
-
-### Run As User Requirements
-
-The Run As user **must have API login access**. Do NOT use Einstein Agent service users (`serviceagentagentforce...@example.com`) — they have restricted licenses and **cannot authenticate via OAuth**. Every attempt returns `"invalid_grant"` / `"Maximum Logins Exceeded"`.
-
-Use a full Salesforce admin user (dev/testing) or a Salesforce Integration User (production).
-
-### Token Request
+### 1. Get a Token
 
 ```
 POST https://{MY_DOMAIN}/services/oauth2/token
@@ -112,75 +28,151 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=client_credentials&client_id={KEY}&client_secret={SECRET}
 ```
 
-### Token Caching (Critical)
+Requires an External Client App with Client Credentials flow. Full setup in [auth-setup.md](auth-setup.md).
 
-Salesforce rate limit: **3,600 logins per user per hour** (rolling window).
+### 2. Start a Session
 
-In Next.js dev mode, HMR resets module-scoped variables on every file save, triggering fresh OAuth requests. Use `globalThis` to persist the token cache:
+```
+POST https://api.salesforce.com/einstein/ai-agent/v1/agents/{AGENT_ID}/sessions
+Authorization: Bearer {TOKEN}
+Content-Type: application/json
+```
+
+```json
+{
+  "externalSessionKey": "<uuid>",
+  "instanceConfig": { "endpoint": "https://{MY_DOMAIN}" },
+  "streamingCapabilities": { "chunkTypes": ["Text"] },
+  "bypassUser": true
+}
+```
+
+### 3. Send a Message
+
+```
+POST https://api.salesforce.com/einstein/ai-agent/v1/sessions/{SESSION_ID}/messages
+Authorization: Bearer {TOKEN}
+Content-Type: application/json
+```
+
+```json
+{
+  "message": { "type": "Text", "text": "Hello!", "sequenceId": 1 }
+}
+```
+
+Response text is in `messages[].message` (not `.text`). Increment `sequenceId` per turn.
+
+---
+
+## Critical Rules
+
+1. **API host**: Always `api.salesforce.com/einstein/ai-agent/v1` — My Domain goes in the body only
+2. **sequenceId**: Must be **inside** the `message` object, not at the root
+3. **Response field**: Text lives in `messages[].message`, not `messages[].text`
+4. **Run As user**: Must have a full Salesforce license — never use Einstein Agent service users
+5. **Token caching**: Mandatory. Salesforce enforces 3,600 logins/user/hour
+6. **Env var trimming**: Always `.trim()` — hosting platforms can add trailing `\n`
+7. **Agent type**: Agent API is **not supported** for "Agentforce (Default)" agents
+8. **Timeout**: 120-second timeout per call; HTTP 500 on timeout
+
+## Session Lifecycle
+
+```
+Start Session → Send Messages (sync or stream) → End Session
+                     ↓
+              Submit Feedback (optional)
+```
+
+- **Synchronous**: Full response in one HTTP response
+- **Streaming**: SSE events — `ProgressIndicator` → `TextChunk` → `Inform` → `EndOfTurn`
+- **End session**: `DELETE /sessions/{SESSION_ID}`
+- **Feedback**: `POST /sessions/{SESSION_ID}/feedback` with `feedbackId` from Inform message
+
+Full endpoint reference in [api-reference.md](api-reference.md).
+
+## Agent Variables
+
+Pass context and custom variables on session start or with messages:
+
+```json
+{
+  "variables": [
+    { "name": "$Context.EndUserLanguage", "value": "en_US" },
+    { "name": "team_descriptor", "value": "Sales West" }
+  ]
+}
+```
+
+Key rules:
+- Context variables (`$Context.*`) are read-only after session start (except `EndUserLanguage`)
+- Custom field variables: omit `__c` suffix (`Conversation_Key__c` → `$Context.Conversation_Key`)
+- Must check "Allow value to be set by API" in Builder; `visibility: external` in metadata
+
+Full variable reference in [api-reference.md](api-reference.md#agent-variables).
+
+## Token Caching (Next.js)
+
+HMR resets module-scoped variables. Use `globalThis` to survive reloads:
 
 ```typescript
-const g = globalThis as typeof globalThis & { __sfToken?: { token: string; expiresAt: number } };
+const g = globalThis as typeof globalThis & {
+  __sfToken?: { token: string; expiresAt: number };
+};
 if (!g.__sfToken) g.__sfToken = { token: '', expiresAt: 0 };
 ```
 
-Additional rules:
-- **Never retry on rate limit** — retrying burns more quota
-- Dedup concurrent token requests with a shared Promise
-- Cache tokens with a 1-minute safety margin before expiry
-- Always `.trim()` env vars — hosting platforms can add trailing `\n`
+- Never retry on rate limit
+- Dedup concurrent requests with a shared Promise
+- Expire tokens 60 seconds early
 
-## Environment Variables
-
-```env
-SALESFORCE_MY_DOMAIN=your-org.my.salesforce.com
-SALESFORCE_CONSUMER_KEY=...
-SALESFORCE_CONSUMER_SECRET=...
-SALESFORCE_AGENT_ID=0XxHu000000XXXXKXX
-```
-
-Always trim: `process.env.SALESFORCE_MY_DOMAIN?.trim()`
-
-Normalize domain for both bare and prefixed formats:
-```typescript
-const endpoint = myDomain.startsWith('https://') ? myDomain : `https://${myDomain}`;
-```
+Full caching patterns in [auth-setup.md](auth-setup.md#token-caching).
 
 ## React Strict Mode
 
-React 18 dev mode double-mounts components. Do NOT use `useRef` guards for session initialization — causes deadlock where neither mount sets state.
-
-Use `AbortController` pattern:
+React 18 dev mode double-mounts. Use `AbortController`, not `useRef` guards:
 
 ```typescript
 useEffect(() => {
   const controller = new AbortController();
-  async function init() {
-    const res = await fetch('/api/session', { method: 'POST', signal: controller.signal });
-    const data = await res.json();
-    setSessionId(data.sessionId);
-  }
-  init().catch(err => {
-    if (err instanceof DOMException && err.name === 'AbortError') return;
-    // handle real errors
-  });
+  fetch('/api/session', { method: 'POST', signal: controller.signal })
+    .then(r => r.json())
+    .then(data => setSessionId(data.sessionId))
+    .catch(err => {
+      if (err.name === 'AbortError') return;
+    });
   return () => controller.abort();
 }, []);
 ```
 
-Mount 1's fetch is aborted on cleanup. Mount 2 runs fresh.
-
 ## Quick Error Reference
 
-| Error | Cause | Fix |
-|---|---|---|
-| `Maximum Logins Exceeded` (every attempt) | Einstein Agent service user as Run As | Change to admin/Integration User |
-| `login rate exceeded` | Too many OAuth requests | Wait 15-30 min; implement globalThis caching |
-| 404 `URL No Longer Exists` | Using My Domain as API host | Use `api.salesforce.com/einstein/ai-agent/v1` |
-| `Missing required creator property 'sequenceId'` | sequenceId at top level | Move inside `message` object |
-| `Bad force-config endpoint` | Trailing `\n` in env var | `.trim()` all env vars |
-| No text in response | Parsing `msg.text` | Use `msg.message` field instead |
-| Session stuck on "Connecting..." | useRef guard + Strict Mode | Use AbortController pattern |
+| Error | Fix |
+|-------|-----|
+| `Maximum Logins Exceeded` | Change Run As to admin/Integration User |
+| `login rate exceeded` | Wait 15–30 min; implement globalThis caching |
+| 404 `URL No Longer Exists` | Use `api.salesforce.com`, not My Domain |
+| `Missing required creator property 'sequenceId'` | Move sequenceId inside `message` object |
+| `Bad force-config endpoint` | `.trim()` all env vars |
+| No text in response | Use `msg.message`, not `msg.text` |
+| Session stuck "Connecting..." | Use AbortController pattern (Strict Mode) |
+| `EngineConfigLookupException` | Use My Domain URL, not Lightning URL |
 
-## Detailed Guide
+Full diagnostic checklist in [troubleshooting.md](troubleshooting.md).
 
-For full walkthrough with code examples and step-by-step setup, see [HOW_TO_GET_AGENTFORCE_AGENT_API_WORKING.md](HOW_TO_GET_AGENTFORCE_AGENT_API_WORKING.md) in the project root.
+## Getting the Agent ID
+
+**Legacy Builder**: 18-char ID from URL in Setup → Agentforce Agents.
+
+**New Builder**: Query `SELECT Id FROM BotDefinition WHERE DeveloperName = 'Agent_Name'`.
+
+## Deep References
+
+| Topic | File |
+|-------|------|
+| Full API endpoints, payloads, variables, citations | [api-reference.md](api-reference.md) |
+| OAuth setup, ECA creation, token caching patterns | [auth-setup.md](auth-setup.md) |
+| Error codes, diagnostics, common integration bugs | [troubleshooting.md](troubleshooting.md) |
+| iOS, Android, React Native Mobile SDKs | [mobile-sdk.md](mobile-sdk.md) |
+| Testing API, Agentforce DX testing, CI/CD | [testing-api.md](testing-api.md) |
+| All Agentforce tools, SDKs, and builder comparison | [ecosystem.md](ecosystem.md) |
