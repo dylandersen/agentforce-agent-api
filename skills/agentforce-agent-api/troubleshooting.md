@@ -10,6 +10,7 @@
 |---------------|-------|-----|
 | `{VALUE} is not a valid agent ID` | Wrong agent ID in URL | Verify agent ID — see [api-reference.md](api-reference.md) "Getting the Agent ID" |
 | `Missing required creator property 'sequenceId'` | `sequenceId` placed at message root | Move `sequenceId` **inside** the `message` object |
+| `DELETE` session returns 400 | Missing session-end reason | Add the `x-session-end-reason` header (e.g. `UserRequest`) |
 
 ### HTTP 401 — Unauthorized
 
@@ -36,6 +37,12 @@
 | `HttpServerErrorException` | Wrong agent ID | Verify agent ID per the correct builder method |
 | Timeout (120s) | Agent response took too long | Simplify agent logic; consider streaming endpoint |
 
+### HTTP 502 / 503 / 504 — Transient Upstream
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Occasional `502`/`503`/`504` on message send | One-off upstream blip | Retry **once** with a short backoff, then surface the error. Commit `sequenceId` only after success so the retry reuses it. See [web-integration.md](web-integration.md#transient-5xx-retry) |
+
 ---
 
 ## Common Integration Issues
@@ -44,6 +51,12 @@
 
 **Symptom**: Parsing `msg.text` returns undefined.
 **Fix**: Response text is in `messages[].message`, not `messages[].text`.
+
+### Bold / Headings / Links Missing From Replies
+
+**Symptom**: The agent is instructed to use Markdown, but the client receives plain text — no `**bold**`, no `## headings`, links arrive as bare URLs.
+**Cause**: The Agentforce **Service Agent** platform strips Markdown from every LLM-generated message before returning it.
+**Fix**: Do not rely on the agent for formatting. Have the agent emit a stable plain-text structure (blank-line blocks, `Name — meta` lines, bare URLs) and render it richly on the client. See [web-integration.md](web-integration.md#service-agents-strip-markdown).
 
 ### Session Stuck on "Connecting..."
 
@@ -101,3 +114,6 @@ When debugging Agent API integration:
 5. **Body**: `sequenceId` inside `message` object? `instanceConfig.endpoint` set?
 6. **Env vars**: All trimmed? Domain normalized with `https://`?
 7. **Rate limits**: Token being cached? Not retrying on `login rate exceeded`?
+8. **Session end**: Sending the `x-session-end-reason` header on `DELETE`?
+9. **Rendering**: Formatting rich output client-side (Service Agents strip Markdown)?
+10. **Resilience**: Retrying transient 502/503/504 once on message sends?

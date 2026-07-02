@@ -81,6 +81,8 @@ grant_type=client_credentials&client_id={CONSUMER_KEY}&client_secret={CONSUMER_S
 
 Use the `access_token` value in the `Authorization: Bearer` header for all Agent API calls.
 
+> **Keep the token server-side.** This token grants agent access for the whole org — never expose it (or the consumer secret) to a browser. Route all Agent API traffic through a backend-for-frontend. See [web-integration.md](web-integration.md#why-a-backend-for-frontend-bff).
+
 ---
 
 ## Token Caching

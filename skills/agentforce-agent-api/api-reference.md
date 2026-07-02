@@ -121,7 +121,10 @@ Same body as synchronous. The `Accept: text/event-stream` header triggers SSE.
 ```
 DELETE /sessions/{SESSION_ID}
 Authorization: Bearer {ACCESS_TOKEN}
+x-session-end-reason: UserRequest
 ```
+
+**Critical**: the `x-session-end-reason` header is **required** — omitting it returns HTTP **400**. Common values: `UserRequest`, `Timeout`, `Error`.
 
 Returns HTTP 200 on success.
 
@@ -258,3 +261,8 @@ The `DeveloperName` is the API name, and the `Id` field in the query result is t
 - **120-second timeout** per API call — HTTP 500 on timeout
 - Impacts credit consumption per [Generative AI Usage and Billing](https://help.salesforce.com/s/articleView?id=ai.generative_ai_usage_billing.htm)
 - Use My Domain URL (`myorg.my.salesforce.com`), **not** Lightning URL (`myorg.lightning.force.com`)
+
+## Reliability Notes
+
+- **Transient 5xx**: message sends occasionally return a one-off `502`/`503`/`504` from an upstream blip. Retry **once** with a short backoff (`sequenceId` reuse is safe if you commit it only after success). See [web-integration.md](web-integration.md#transient-5xx-retry).
+- **Service Agent Markdown**: Service Agents strip Markdown from LLM-generated `messages[].message` text before returning it. Format rich output client-side. See [web-integration.md](web-integration.md#service-agents-strip-markdown).
